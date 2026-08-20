@@ -47,7 +47,7 @@ class HandeyeServer(rclpy.node.Node):
 
     def setup_services_and_topics(self):
         if not self.sampler.wait_for_tf_init():
-            self.get_logger().warn('Waiting for TF initialization...')
+            self.get_logger().warning('Waiting for TF initialization...')
             return
 
         self.list_algorithms_service = self.create_service(ehm.srv.ListAlgorithms, hec.LIST_ALGORITHMS_TOPIC,
@@ -168,7 +168,7 @@ class HandeyeServer(rclpy.node.Node):
 
         self.last_calibration = backend.compute_calibration(self, self.parameters, samples, algorithm=algname)
         if self.last_calibration is None:
-            self.get_logger().warn('No valid calibration computed')
+            self.get_logger().warning('No valid calibration computed')
             response.valid = False
             return response
         response.valid = True
