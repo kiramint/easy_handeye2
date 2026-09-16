@@ -85,27 +85,54 @@ class HandeyeSampler:
         return True
 
     def _get_transforms(self, time: Optional[rclpy.time.Time] = None) -> Sample | None:
-        """
-        Samples the transforms at the given time.
-        """
-        if time is None:
-            time = self.node.get_clock().now() - rclpy.time.Duration(nanoseconds=200000000)
+        """Sample robot and tracking transforms at a common TF timestamp.
 
-        # here we trick the library (it is actually made for eye_in_hand only). Trust me, I'm an engineer
+        The old implementation requested ``now - 0.2 s``.  That assumes that
+        the ArUco detector publishes within 200 ms of the wall clock, which is
+        not true for a camera running at a lower rate or while detection is
+        intermittent.  It caused repeated future-extrapolation failures and,
+        more importantly, made it easy to pair transforms from different
+        instants.
+
+        For an interactive sample, first obtain the newest camera/marker
+        transform and then query the robot transform at that transform's
+        timestamp.  The marker transform is stamped by the image callback, so
+        this pairs the robot pose with the image that produced the marker pose.
+        An explicit timestamp is still supported for callers that need one.
+        """
+        robot_base = self.handeye_parameters.robot_base_frame
+        robot_effector = self.handeye_parameters.robot_effector_frame
+        tracking_base = self.handeye_parameters.tracking_base_frame
+        tracking_marker = self.handeye_parameters.tracking_marker_frame
+
         try:
-            if self.handeye_parameters.calibration_type == 'eye_in_hand':
-                robot = self.tfBuffer.lookup_transform(self.handeye_parameters.robot_base_frame,
-                                                       self.handeye_parameters.robot_effector_frame, time,
-                                                       Duration(seconds=1))
+            if time is None:
+                # Time() asks tf2 for the latest available transform.  Use the
+                # returned marker timestamp as the common sample time instead
+                # of guessing a fixed camera latency.
+                tracking = self.tfBuffer.lookup_transform(
+                    tracking_base, tracking_marker, Time(), Duration(seconds=1))
+                stamp = tracking.header.stamp
+                time = Time(
+                    nanoseconds=stamp.sec * 1_000_000_000 + stamp.nanosec,
+                    clock_type=Time().clock_type,
+                )
             else:
-                robot = self.tfBuffer.lookup_transform(self.handeye_parameters.robot_effector_frame,
-                                                       self.handeye_parameters.robot_base_frame, time,
-                                                       Duration(seconds=1))
-            tracking = self.tfBuffer.lookup_transform(self.handeye_parameters.tracking_base_frame,
-                                                      self.handeye_parameters.tracking_marker_frame, time,
-                                                      Duration(seconds=1))
-        except tf2_ros.ExtrapolationException as e:
-            self.node.get_logger().error(f'Failed to get the tracking transform: {e}')
+                tracking = self.tfBuffer.lookup_transform(
+                    tracking_base, tracking_marker, time, Duration(seconds=1))
+
+            # easy_handeye2/OpenCV expects the eye-on-base robot input in the
+            # inverse direction (effector -> base).  Keep that convention here;
+            # the backend and publisher use the corresponding result direction.
+            if self.handeye_parameters.calibration_type == 'eye_in_hand':
+                robot = self.tfBuffer.lookup_transform(
+                    robot_base, robot_effector, time, Duration(seconds=1))
+            else:
+                robot = self.tfBuffer.lookup_transform(
+                    robot_effector, robot_base, time, Duration(seconds=1))
+        except tf2_ros.TransformException as e:
+            self.node.get_logger().error(
+                f'Failed to get synchronized robot/tracking transforms: {e}')
             return None
 
         ret = Sample()

@@ -179,14 +179,45 @@ class RqtHandeyeEvaluatorWidget(QWidget):
                 return t.x, t.y, t.z
 
             translations = [translation_from_msg(t) for t in self.measurement_transforms]
-            translations_np = np.array(translations)
+            translations_np = np.asarray(translations, dtype=float)
             translations_avg = translations_np.mean(axis=0)
-            translations_from_avg = translations_np - translations_avg
-            translations_max_divergence = np.max(translations_from_avg)
-            self._node.get_logger().info("Maximum divergence: {}".format(translations_max_divergence))
+            translation_residuals = translations_np - translations_avg
+            translation_norms = np.linalg.norm(translation_residuals, axis=1)
+            translation_rms = float(np.sqrt(np.mean(np.square(translation_norms))))
+            translation_max = float(np.max(translation_norms))
+
+            # The old implementation used np.max() directly on the signed
+            # xyz residuals.  That was not a 3-D error metric and could report
+            # a misleading value.  Report Euclidean RMS/max translation error
+            # and the corresponding orientation spread instead.
+            quaternions = []
+            for transform in self.measurement_transforms:
+                q = transform.transform.rotation
+                quaternion = np.array([q.x, q.y, q.z, q.w], dtype=float)
+                norm = np.linalg.norm(quaternion)
+                if norm > 0.0:
+                    quaternion /= norm
+                if quaternions and np.dot(quaternions[0], quaternion) < 0.0:
+                    quaternion = -quaternion
+                quaternions.append(quaternion)
+            quaternion_avg = np.sum(quaternions, axis=0)
+            quaternion_avg /= np.linalg.norm(quaternion_avg)
+            rotation_errors_deg = []
+            for quaternion in quaternions:
+                dot = float(np.clip(abs(np.dot(quaternion_avg, quaternion)), -1.0, 1.0))
+                rotation_errors_deg.append(np.degrees(2.0 * np.arccos(dot)))
+            rotation_rms = float(np.sqrt(np.mean(np.square(rotation_errors_deg))))
+            rotation_max = float(np.max(rotation_errors_deg))
+
+            self._node.get_logger().info(
+                "Translation RMS: {:.6f} m, max: {:.6f} m; "
+                "rotation RMS: {:.3f} deg, max: {:.3f} deg".format(
+                    translation_rms, translation_max, rotation_rms, rotation_max))
 
             self._widget.doubleSpinBox_error.setEnabled(True)
-            self._widget.doubleSpinBox_error.setValue(translations_max_divergence.max())
+            # Preserve the existing UI field semantics, but make it a real
+            # maximum 3-D translation deviation in metres.
+            self._widget.doubleSpinBox_error.setValue(translation_max)
         else:
             self._widget.doubleSpinBox_error.setValue(0)
             self._widget.doubleSpinBox_error.setEnabled(False)
